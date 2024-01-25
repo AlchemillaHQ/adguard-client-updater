@@ -6,7 +6,7 @@ export function arraysEqual (arr1, arr2) {
 
 export function pingIP (ip) {
   return new Promise((resolve, reject) => {
-    const command = ip.includes(':') ? `ping6 -c 1 ${ip}` : `ping -c 1 ${ip}`;
+    const command = ip.includes(':') ? `ping6 -c 1 ${ip} -W 1` : `ping -c 1 ${ip} -W 1`;
 
     exec(command, (error, stdout, stderr) => {
       if (error) {
