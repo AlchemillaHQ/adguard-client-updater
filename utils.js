@@ -4,7 +4,7 @@ export function arraysEqual (arr1, arr2) {
   return arr1.length === arr2.length && arr1.every((value, index) => value === arr2[index]);
 }
 
-export function pingIP (ip) {
+export function pingIP(ip) {
   return new Promise((resolve, reject) => {
     const command = ip.includes(':') ? `ping6 -c 1 ${ip} -W 1` : `ping -c 1 ${ip} -W 1`;
 
@@ -13,7 +13,12 @@ export function pingIP (ip) {
         resolve(false);
         return;
       }
-      resolve(stdout.includes('1 packets received') || stdout.includes('1 received'));
+
+      const success = stdout.includes('1 packets received');
+      const packetLoss = stdout.includes('100% packet loss') || stdout.includes('100.0% packet loss') || stdout.includes("100% packet loss");
+
+      resolve(success && !packetLoss);
     });
   });
 }
+
