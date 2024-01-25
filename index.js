@@ -49,7 +49,7 @@ async function updateClients() {
         const clientIPs = new Set(neighbors
             .filter(neighbor => client.ids.includes(neighbor.lladdr))
             .map(neighbor => neighbor.dst));
-        
+
         Object.keys(staleIPs).forEach(ip => clientIPs.add(ip));
 
         const pingResults = await Promise.all(Array.from(clientIPs).map(ip => pingIP(ip)));
@@ -74,7 +74,7 @@ async function updateClients() {
             data: client
           };
 
-          console.log(`Updating client ${client.name} with new IPs: ${finalIPs}`);
+          console.log(`Sending update for client ${client.name}:`, JSON.stringify(updateObj, null, 2));
           return adguardFetch(API_ENDPOINTS.CLIENTS_UPDATE, 'POST', updateObj);
         }
       });
