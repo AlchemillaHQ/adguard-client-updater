@@ -1,7 +1,10 @@
 import dotenv from 'dotenv';
 import { neigh } from 'ip-wrapper';
+import { pingIP, arraysEqual } from './utils.js';
 
 dotenv.config();
+
+const staleIPs = {};
 
 const adguardConfig = {
   api: process.env.API || 'http://127.0.0.1:3000',
@@ -13,10 +16,6 @@ const API_ENDPOINTS = {
   CLIENTS: '/control/clients',
   CLIENTS_UPDATE: '/control/clients/update'
 };
-
-function arraysEqual (arr1, arr2) {
-  return arr1.length === arr2.length && arr1.every((value, index) => value === arr2[index]);
-}
 
 async function adguardFetch (endpoint, method, body) {
   try {
@@ -51,16 +50,29 @@ async function updateClients () {
           .filter(neighbor => client.ids.includes(neighbor.lladdr))
           .map(neighbor => neighbor.dst);
 
-        const uniqueIds = [...new Set([...client.ids, ...clientIPs])];
+        const pingResults = await Promise.all(clientIPs.map(ip => pingIP(ip)));
+        const activeIPs = new Set(); // Use a Set to ensure uniqueness
+        clientIPs.forEach((ip, index) => {
+          if (pingResults[index]) {
+            activeIPs.add(ip);
+            staleIPs[ip] = 0; // Reset stale count
+          } else {
+            if (!staleIPs[ip]) staleIPs[ip] = 0;
+            staleIPs[ip]++;
+          }
+        });
 
-        if (!arraysEqual(client.ids, uniqueIds)) {
-          client.ids = uniqueIds;
+        const updatedIDs = client.ids.filter(id => !staleIPs[id] || staleIPs[id] <= 4);
+        const combinedIDs = Array.from(new Set([...updatedIDs, ...activeIPs]));
+
+        if (!arraysEqual(client.ids, combinedIDs)) {
+          client.ids = combinedIDs;
           const updateObj = {
             name: client.name,
             data: client
           };
 
-          console.log(`Updating client ${client.name} with new IDs: ${uniqueIds}`);
+          console.log(`Updating client ${client.name} with new IDs: ${combinedIDs}`);
           return adguardFetch(API_ENDPOINTS.CLIENTS_UPDATE, 'POST', updateObj);
         }
       });
