@@ -4,7 +4,7 @@ import { pingIP, arraysEqual } from './utils.js';
 
 dotenv.config();
 
-const staleIPs = {};
+const staleIPs = {}; // Object to track stale IPs with TTL
 
 const adguardConfig = {
   api: process.env.API || 'http://127.0.0.1:3000',
@@ -31,60 +31,74 @@ async function adguardFetch(endpoint, method, body) {
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-
-    return await response.json();
+    return await response.text()
   } catch (error) {
-    console.error(`Failed to fetch from AdGuard: ${error.message}`);
+    console.log(error);
     throw error;
   }
 }
 
+
 async function updateClients() {
   try {
-    const neighbors = await neigh.show();
-    const existingClients = JSON.parse(await adguardFetch(API_ENDPOINTS.CLIENTS, 'GET'));
+    let [neighbors, existingClients] = await Promise.all([
+      neigh.show(),
+      adguardFetch(API_ENDPOINTS.CLIENTS, 'GET')
+    ]);
 
-    if (existingClients.clients) {
-      const clientUpdates = existingClients.clients.map(async (client) => {
-        const clientIPs = new Set(neighbors
-            .filter(neighbor => client.ids.includes(neighbor.lladdr))
-            .map(neighbor => neighbor.dst));
+    existingClients = JSON.parse(existingClients);
 
-        Object.keys(staleIPs).forEach(ip => clientIPs.add(ip));
+    const neighborIPsByMAC = neighbors.reduce((acc, neighbor) => {
+      if (neighbor.lladdr && neighbor.dst) {
+        acc[neighbor.lladdr] = (acc[neighbor.lladdr] || []);
+        acc[neighbor.lladdr].push(neighbor.dst);
+      }
+      return acc;
+    }, {});
 
-        const pingResults = await Promise.all(Array.from(clientIPs).map(ip => pingIP(ip)));
-        const updatedIPs = new Set(); // Use a Set to ensure uniqueness
+    const clientUpdates = existingClients.clients.map(async (client) => {
+      const macAddresses = client.ids.filter(id => id.includes(':') && id.length === 17);
+      let ipsForClient = client.ids.filter(id => !id.includes(':') || id.length !== 17);
 
-        Array.from(clientIPs).forEach((ip, index) => {
-          if (pingResults[index]) {
-            updatedIPs.add(ip);
-            staleIPs[ip] = 0; // Reset stale count
-          } else {
-            if (!staleIPs[ip]) staleIPs[ip] = 0;
-            staleIPs[ip]++;
-          }
-        });
-
-        const finalIPs = Array.from(updatedIPs).filter(ip => !staleIPs[ip] || staleIPs[ip] <= 4);
-
-        if (!arraysEqual(client.ids, finalIPs)) {
-          client.ids = finalIPs;
-          const updateObj = {
-            name: client.name,
-            data: client
-          };
-
-          console.log(`Sending update for client ${client.name}:`, JSON.stringify(updateObj, null, 2));
-          return adguardFetch(API_ENDPOINTS.CLIENTS_UPDATE, 'POST', updateObj);
+      macAddresses.forEach(mac => {
+        if (neighborIPsByMAC[mac]) {
+          ipsForClient = [...ipsForClient, ...neighborIPsByMAC[mac]];
         }
       });
 
-      await Promise.all(clientUpdates);
-    }
+      const pingResults = await Promise.all(ipsForClient.map(ip => pingIP(ip)));
+      ipsForClient = ipsForClient.filter((ip, index) => {
+        const isAlive = pingResults[index];
+        if (isAlive) {
+          if (staleIPs[ip]) {
+            delete staleIPs[ip];
+          }
+        } else {
+          staleIPs[ip] = (staleIPs[ip] || 0) + 1;
+        }
+        return isAlive || (staleIPs[ip] <= 100);
+      });
+
+      const updatedIds = [...new Set([...macAddresses, ...ipsForClient])];
+
+      if (!arraysEqual(client.ids, updatedIds)) {
+        client.ids = updatedIds;
+        const updateObj = {
+          name: client.name,
+          data: client
+        };
+
+        console.log(`Updating client ${client.name} with new IDs: ${updatedIds}`);
+        return adguardFetch(API_ENDPOINTS.CLIENTS_UPDATE, 'POST', updateObj);
+      }
+    });
+
+    await Promise.all(clientUpdates);
   } catch (error) {
     console.error('Unable to update AdGuard clients', error.message);
   }
 }
+
 
 console.log('Started AdGuard client updater\n-----------------------------');
 await updateClients();
