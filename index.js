@@ -17,7 +17,7 @@ const API_ENDPOINTS = {
   CLIENTS_UPDATE: '/control/clients/update'
 };
 
-async function adguardFetch (endpoint, method, body) {
+async function adguardFetch(endpoint, method, body) {
   try {
     const response = await fetch(`http://${adguardConfig.api}${endpoint}`, {
       method,
@@ -32,29 +32,32 @@ async function adguardFetch (endpoint, method, body) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.text();
+    return await response.json();
   } catch (error) {
     console.error(`Failed to fetch from AdGuard: ${error.message}`);
     throw error;
   }
 }
 
-async function updateClients () {
+async function updateClients() {
   try {
     const neighbors = await neigh.show();
     const existingClients = JSON.parse(await adguardFetch(API_ENDPOINTS.CLIENTS, 'GET'));
 
     if (existingClients.clients) {
       const clientUpdates = existingClients.clients.map(async (client) => {
-        const clientIPs = neighbors
-          .filter(neighbor => client.ids.includes(neighbor.lladdr))
-          .map(neighbor => neighbor.dst);
+        const clientIPs = new Set(neighbors
+            .filter(neighbor => client.ids.includes(neighbor.lladdr))
+            .map(neighbor => neighbor.dst));
+        
+        Object.keys(staleIPs).forEach(ip => clientIPs.add(ip));
 
-        const pingResults = await Promise.all(clientIPs.map(ip => pingIP(ip)));
-        const activeIPs = new Set(); // Use a Set to ensure uniqueness
-        clientIPs.forEach((ip, index) => {
+        const pingResults = await Promise.all(Array.from(clientIPs).map(ip => pingIP(ip)));
+        const updatedIPs = new Set(); // Use a Set to ensure uniqueness
+
+        Array.from(clientIPs).forEach((ip, index) => {
           if (pingResults[index]) {
-            activeIPs.add(ip);
+            updatedIPs.add(ip);
             staleIPs[ip] = 0; // Reset stale count
           } else {
             if (!staleIPs[ip]) staleIPs[ip] = 0;
@@ -62,17 +65,16 @@ async function updateClients () {
           }
         });
 
-        const updatedIDs = client.ids.filter(id => !staleIPs[id] || staleIPs[id] <= 4);
-        const combinedIDs = Array.from(new Set([...updatedIDs, ...activeIPs]));
+        const finalIPs = Array.from(updatedIPs).filter(ip => !staleIPs[ip] || staleIPs[ip] <= 4);
 
-        if (!arraysEqual(client.ids, combinedIDs)) {
-          client.ids = combinedIDs;
+        if (!arraysEqual(client.ids, finalIPs)) {
+          client.ids = finalIPs;
           const updateObj = {
             name: client.name,
             data: client
           };
 
-          console.log(`Updating client ${client.name} with new IDs: ${combinedIDs}`);
+          console.log(`Updating client ${client.name} with new IPs: ${finalIPs}`);
           return adguardFetch(API_ENDPOINTS.CLIENTS_UPDATE, 'POST', updateObj);
         }
       });
